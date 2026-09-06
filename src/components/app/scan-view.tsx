@@ -17,11 +17,11 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { toast } from 'sonner'
 import {
   Camera, FileImage, Languages, Loader2, RefreshCw, RotateCcw, RotateCw, Save, ScanLine,
-  Sparkles, Trash2, Upload, Wand2, X, CheckCircle2, AlertTriangle, CircleDot,
+  Sparkles, Trash2, Upload, Wand2, X, CheckCircle2, AlertTriangle, CircleDot, Bot,
 } from 'lucide-react'
 import type { ExtractedField, OcrLine, ScanDTO } from '@/lib/types'
 import { CATEGORIES } from '@/lib/rules/repository'
-import { suggestCategory } from '@/lib/rules/extract'
+import { mergeVlmFields, suggestCategory, type VlmFieldInput } from '@/lib/rules/extract'
 import { FIELD_LABEL } from '@/lib/rules/synonyms'
 import { DEFAULT_PREPROCESS, loadImage, processImage, type PreprocessOptions } from '@/lib/ocr/preprocess'
 import { ocrPipeline, type OcrProgress, type OcrResult } from '@/lib/ocr/pipeline'
@@ -29,6 +29,16 @@ import { DEMO_SAMPLES, renderSampleImage, getSample } from '@/lib/samples'
 import { ConfidenceBar, EvidenceOverlay, ScriptChips, SeverityBadge, StatusBadge } from './bits'
 
 type Phase = 'source' | 'adjust' | 'running' | 'results'
+
+/** response of POST /api/ai/extract */
+interface VlmExtractResponse {
+  fields: VlmFieldInput[]
+  provider: string
+  model: string
+  attempts: number
+  elapsedMs: number
+  failoverFrom?: string
+}
 
 const LANG_OPTIONS: { value: string; label: string; langs: string[] }[] = [
   { value: 'auto', label: 'Auto-detect (recommended)', langs: [] },
@@ -64,6 +74,8 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
   const fileRef = useRef<HTMLInputElement | null>(null)
   const [demoMode, setDemoMode] = useState(false)
   const [demoId, setDemoId] = useState<string | null>(null)
+  const [vlm, setVlm] = useState<VlmExtractResponse | null>(null)
+  const [vlmBusy, setVlmBusy] = useState(false)
 
   // preview canvas refresh when preprocess options change
   useEffect(() => {
@@ -212,6 +224,43 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
       .filter((b): b is { bbox: NonNullable<ExtractedField['bbox']>; color: string } => b.bbox != null)
   }, [result, ocrFields])
 
+  // AI fallback is offered when the deterministic pass left gaps or ran on weak OCR
+  const meanOcrConf = useMemo(() => {
+    if (!result?.lines.length) return 1
+    return result.lines.reduce((s, l) => s + l.confidence, 0) / result.lines.length
+  }, [result])
+  const needsAi = useMemo(
+    () =>
+      phase === 'results' &&
+      !!result &&
+      !demoMode &&
+      ((ocrFields?.some((f) => f.value === null) ?? true) || meanOcrConf < 0.75),
+    [phase, result, demoMode, ocrFields, meanOcrConf],
+  )
+
+  const runVlm = useCallback(async () => {
+    if (!result || vlmBusy) return
+    setVlmBusy(true)
+    try {
+      const res = await fetch('/api/ai/extract', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ imageData: result.displayDataUrl, ocrText: result.ocrText }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(String(json.error ?? 'AI extraction failed'))
+      const data = json as VlmExtractResponse
+      setVlm(data)
+      setOcrFields((prev) => (prev ? mergeVlmFields(prev, data.fields) : prev))
+      const filled = data.fields.length
+      toast.success(`AI fallback: ${filled} field${filled === 1 ? '' : 's'} read by ${data.provider}${data.failoverFrom ? ` (after ${data.failoverFrom} failed)` : ''}`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'AI fallback failed')
+    } finally {
+      setVlmBusy(false)
+    }
+  }, [result, vlmBusy])
+
   const saveScan = useCallback(async () => {
     if (!result) return
     setSaving(true)
@@ -231,6 +280,7 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
           categorySource,
           isEcommerce: isEcomm,
           fields, // client preview only
+          vlmFields: vlm?.fields, // AI fallback reads (server re-validates + merges)
         }),
       })
       const json = await res.json()
@@ -243,13 +293,14 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
       setResult(null)
       setOcrFields(null)
       setPreviewUrl(null)
+      setVlm(null)
     } catch (e) {
       console.error(e)
       toast.error('Failed to save scan')
     } finally {
       setSaving(false)
     }
-  }, [result, fileName, category, categorySource, isEcomm, onSaved, ocrFields])
+  }, [result, fileName, category, categorySource, isEcomm, onSaved, ocrFields, vlm])
 
   // compute fields for display when results change
   useEffect(() => {
@@ -483,7 +534,31 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
             </Card>
 
             <Card>
-              <CardHeader className="pb-2"><CardTitle className="text-sm">Normalized fields</CardTitle></CardHeader>
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center justify-between text-sm">
+                  <span>Normalized fields</span>
+                  {(needsAi || vlm) && (
+                    <span className="flex items-center gap-2">
+                      {vlm && !vlmBusy && (
+                        <span className="font-mono text-[10px] text-teal-300/80">
+                          {vlm.provider} · {vlm.model} · {vlm.attempts} attempt{vlm.attempts > 1 ? 's' : ''}
+                        </span>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 border-teal-500/40 px-2 text-[11px] text-teal-300 hover:bg-teal-500/10"
+                        onClick={runVlm}
+                        disabled={vlmBusy}
+                        title="Ask the vision model to read fields the OCR pass missed"
+                      >
+                        {vlmBusy ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Bot className="mr-1 h-3 w-3" />}
+                        {vlmBusy ? 'Reading label…' : vlm ? 'Re-run AI' : 'AI fallback'}
+                      </Button>
+                    </span>
+                  )}
+                </CardTitle>
+              </CardHeader>
               <CardContent>
                 {ocrFields && ocrFields.length > 0 ? (
                   <div className="space-y-1.5">
@@ -496,7 +571,14 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
                         className="flex w-full items-center justify-between gap-2 rounded-md border border-border/60 px-3 py-2 text-left transition-colors hover:border-teal-500/40 hover:bg-teal-500/5"
                       >
                         <span className="min-w-0">
-                          <span className="block text-[11px] uppercase tracking-wide text-muted-foreground">{FIELD_LABEL[f.field]}</span>
+                          <span className="flex items-center gap-1.5">
+                            <span className="text-[11px] uppercase tracking-wide text-muted-foreground">{FIELD_LABEL[f.field]}</span>
+                            {f.source === 'ai' && (
+                              <span className="flex items-center gap-0.5 rounded bg-teal-500/15 px-1 py-px text-[9px] font-bold text-teal-300">
+                                <Bot className="h-2.5 w-2.5" />AI
+                              </span>
+                            )}
+                          </span>
                           <span className="block truncate text-sm font-medium">{f.value ?? <span className="text-amber-300">value not parsed</span>}</span>
                         </span>
                         <ConfidenceBar value={f.confidence} />

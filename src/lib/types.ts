@@ -28,6 +28,8 @@ export interface ExtractedField {
   bbox: BBox | null
   confidence: number
   matchedSynonym: string
+  /** 'ai' when this value came from the VLM fallback layer (absent = OCR) */
+  source?: 'ocr' | 'ai'
 }
 
 export type Severity = 'COMPLIANT' | 'VIOLATION' | 'MISSING' | 'WARNING'

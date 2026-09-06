@@ -34,6 +34,7 @@ Every pre-packaged commodity sold in India must carry mandatory declarations —
 - **Deterministic rules engine**: 13 rules in 3 layers (TEXT / VISUAL / CATEGORY), 4 rule versions with a timeline, ENFORCED vs INFORMATIVE severity, and an auditable `ruleRef` for every finding (e.g. *PCR 2011, R6(1)*).
 - **Triage + human-in-the-loop**: only low-confidence or violation findings enter the review queue; inspectors **Accept / Modify / Reject** (keyboard A/M/R), and every correction triggers deterministic re-validation and recomputes the scan status.
 - **Evidence-first**: every finding carries its bounding box on the source image; scan detail shows the OCR evidence overlay.
+- **AI fallback extraction (VLM)**: when the deterministic pass leaves a field unparsed (pre-printed labels, glare, stylized fonts), one click asks a vision-language model to read the photo. Provider chain: **Z.ai GLM** (`glm-4.6v-flash`, up to 15 attempts with exponential backoff + jitter, Retry-After aware) → **NVIDIA NIM** backup. AI values are gap-fill only — they run through the SAME normalizers and rule engine, and are tagged `AI` in the UI and audit trail. 429s caused by exhausted account quota are never retried.
 - **Export**: one-click branded **PDF compliance report** (verdict, fields table, findings with severity colors, package photo) and **CSV** for record-keeping.
 - **Analytics dashboard**: KPIs, compliance trends, category mix, language mix, pending-review workload.
 
@@ -42,13 +43,15 @@ Every pre-packaged commodity sold in India must carry mandatory declarations —
 ```
 src/
   app/                      Next.js App Router (single-route app)
-    api/scans/              POST create (server-side extract + engine = single source of truth)
+    api/scans/              POST create (server-side extract + engine = single source of truth; accepts VLM gap-fill reads)
     api/scans/[id]/         GET / DELETE
+    api/ai/extract/         POST image → VLM field reads (GLM → NIM failover, retry w/ backoff)
     api/findings/[id]/      PATCH accept / modify / reject (+ status recompute)
     api/stats/              dashboard aggregates
   components/app/           dashboard, scan-view, review-queue, history, rules-browser, scan-detail
   components/ui/            shadcn/ui primitives
   lib/
+    ai/                      provider layer: retry.ts (backoff+jitter+deadline) · providers.ts (GLM/NIM) · extract.ts (VLM task)
     ocr/                    preprocess.ts (canvas CV pipeline) + pipeline.ts (OSD → eng → script re-OCR)
     language/detect.ts      script-ratio detection, bilingual labels
     rules/                  repository (rule versions) → extract (normalizers) → engine (evaluator)
@@ -90,6 +93,17 @@ Open <http://localhost:3000>. For a quick demo without a camera, the Scan view i
 
 > Tesseract language packs (eng, hin, …) download on first use from the CDN and are cached by the browser.
 
+### AI fallback (optional)
+
+The VLM fallback is off until you add provider keys to `.env` (see `.env.example`):
+
+```bash
+ZAI_API_KEY=your-zai-key      # Z.ai GLM vision — glm-4.6v-flash is free-tier backed
+ZAI_MODEL=glm-4.6v-flash
+# NIM_API_KEY=nvapi-...       # NVIDIA NIM backup (https://build.nvidia.com)
+# NIM_MODEL=meta/llama-4-scout-17b-16e-instruct
+```
+
 ## API
 
 | Method | Route | Purpose |
@@ -99,6 +113,7 @@ Open <http://localhost:3000>. For a quick demo without a camera, the Scan view i
 | GET | `/api/scans/{id}` | Scan with findings |
 | DELETE | `/api/scans/{id}` | Delete scan (cascades findings) |
 | PATCH | `/api/findings/{id}` | Inspector action: `ACCEPT` / `MODIFY` (re-validates) / `REJECT` |
+| POST | `/api/ai/extract` | VLM fallback: image → verbatim field reads (GLM → NIM failover, retry w/ backoff) |
 | GET | `/api/stats` | Dashboard KPIs + chart aggregates |
 
 ## Project layout
@@ -112,7 +127,8 @@ Open <http://localhost:3000>. For a quick demo without a camera, the Scan view i
 ## Roadmap
 
 - Bounding-box field selection on the evidence image (MRP / batch / dates) for challenging pre-printed labels
-- VLM (vision-language model) fallback extraction for low-quality photos, with a pluggable provider layer + retry/backoff
+- ~~VLM (vision-language model) fallback extraction for low-quality photos, with a pluggable provider layer + retry/backoff~~ — **shipped** (`src/lib/ai/`, `POST /api/ai/extract`)
+- Device-local (password-encrypted) bring-your-own-key UI: provider selection, model, budget
 - Barcode / QR cross-checks against batch and expiry data
 - Inspector analytics export for enforcement planning
 

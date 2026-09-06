@@ -2,7 +2,7 @@
 
 import { db } from '@/lib/db'
 import type { BBox, ExtractedField, FindingDTO, OcrLine, ScanDTO } from '@/lib/types'
-import { extractFields } from '@/lib/rules/extract'
+import { extractFields, mergeVlmFields, type VlmFieldInput } from '@/lib/rules/extract'
 import { findingTriage, runRuleEngine } from '@/lib/rules/engine'
 import { activeVersionLabel } from '@/lib/rules/repository'
 
@@ -22,6 +22,8 @@ export interface CreateScanPayload {
   category: string
   categorySource: 'auto' | 'manual'
   isEcommerce: boolean
+  /** AI (VLM) fallback reads — gap-fill only, normalized through the same parsers */
+  vlmFields?: VlmFieldInput[]
 }
 
 export async function recomputeScanStatus(scanId: string): Promise<void> {
@@ -44,7 +46,11 @@ export async function recomputeScanStatus(scanId: string): Promise<void> {
 
 export async function createScan(payload: CreateScanPayload) {
   // ---- deterministic pipeline (server side, single source of truth) ----
-  const fields: ExtractedField[] = extractFields(payload.lines)
+  // OCR extraction first; VLM reads only fill gaps the OCR pass missed.
+  const fields: ExtractedField[] = mergeVlmFields(
+    extractFields(payload.lines),
+    payload.vlmFields ?? [],
+  )
   const { findings, overallConfidence, status } = runRuleEngine({
     fields,
     lines: payload.lines,

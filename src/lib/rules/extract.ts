@@ -5,6 +5,13 @@
 import type { BBox, ExtractedField, FieldKey, OcrLine } from '@/lib/types'
 import { FIELD_LABEL, matchField } from './synonyms'
 
+/** raw VLM (AI fallback) field read — value is VERBATIM label text */
+export interface VlmFieldInput {
+  field: FieldKey
+  value: string
+  confidence?: number
+}
+
 const MONTHS: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,
   january: 1, february: 2, march: 3, april: 4, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
@@ -145,6 +152,74 @@ export function extractFields(lines: OcrLine[]): ExtractedField[] {
 }
 
 export { FIELD_LABEL }
+
+/**
+ * Normalize one raw (VLM) value through the SAME deterministic parsers the
+ * OCR pipeline uses — AI output is schema-grounded, never free-form.
+ * Returns null when the value does not parse for that field type.
+ */
+export function normalizeFieldValue(field: FieldKey, value: string): string | null {
+  const v = value.trim()
+  if (!v) return null
+  switch (field) {
+    case 'MRP': return mrpVal(v)
+    case 'NET_QTY': return qtyVal(v)
+    case 'MFG_DATE': return dateVal(v)
+    case 'BEST_BEFORE': return dateVal(v)
+    case 'ORIGIN': return originVal(v) ?? (v.length <= 40 && /^[A-Za-z][A-Za-z .]*$/.test(v) ? v : null)
+    case 'CONSUMER_CARE': return careVal(v) ?? (v.length > 3 ? v : null)
+    case 'MANUFACTURER': return lineValue('MANUFACTURER', v, '') ?? (v.length > 3 ? v : null)
+    case 'GENERIC_NAME': return lineValue('GENERIC_NAME', v, '') ?? (v.length > 1 ? v : null)
+    case 'UNIT_PRICE_HINT': return lineValue('UNIT_PRICE_HINT', v, '')
+    default: return null
+  }
+}
+
+/**
+ * Merge AI (VLM) reads into the deterministic field set — GAP-FILL ONLY:
+ *   - field missing entirely        -> added, marked source 'ai'
+ *   - field parsed as null by OCR   -> filled, marked source 'ai'
+ *   - field already parsed by OCR   -> OCR wins (deterministic-first, no override)
+ * Every AI value is normalized through normalizeFieldValue first.
+ */
+export function mergeVlmFields(base: ExtractedField[], vlm: VlmFieldInput[]): ExtractedField[] {
+  if (!vlm.length) return base
+  const out = base.map((f) => ({ ...f }))
+  const idx = new Map<FieldKey, number>(out.map((f, i) => [f.field, i]))
+
+  for (const v of vlm) {
+    const value = normalizeFieldValue(v.field, v.value)
+    if (value == null) continue
+    const conf = Math.min(0.95, Math.max(0.4, v.confidence ?? 0.85))
+    const existing = idx.get(v.field)
+    if (existing === undefined) {
+      out.push({
+        field: v.field,
+        value,
+        raw: v.value,
+        lineIdx: -1,
+        bbox: null,
+        confidence: conf,
+        matchedSynonym: 'AI fallback',
+        source: 'ai',
+      })
+      idx.set(v.field, out.length - 1)
+    } else {
+      const f = out[existing]
+      if (f.value == null) {
+        out[existing] = {
+          ...f,
+          value,
+          raw: `${f.raw} ∥ AI: ${v.value}`,
+          confidence: Math.max(f.confidence, conf),
+          matchedSynonym: `${f.matchedSynonym} +AI`,
+          source: 'ai',
+        }
+      }
+    }
+  }
+  return out
+}
 
 /** Auto-suggest a category from free OCR text keywords. */
 export function suggestCategory(text: string): { category: string; source: 'auto' | 'manual' } {
