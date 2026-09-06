@@ -6,9 +6,12 @@
 //   - zoom slider (optical + digital, when exposed via track capabilities)
 //   - tap-to-focus (pointsOfInterest) with an AF ring animation
 //   - guidance frame overlay ("align the label inside the brackets")
-//   - high-quality JPEG capture (1920 ideal, q=0.92 — OCR benefits)
+//   - WYSIWYG capture: the JPEG contains EXACTLY the region the viewfinder
+//     shows (object-cover math — no surprise extra field of view), cut at the
+//     sensor's natural resolution (up to 4096px ideal, q=0.95 — OCR benefits)
 //   - graceful fallback to <input capture="environment"> when getUserMedia
-//     is denied or unavailable (e.g. desktop without a webcam)
+//     is denied or unavailable (e.g. desktop without a webcam), plus a one-tap
+//     "system camera" handoff for phones whose native app shoots better
 
 'use client'
 
@@ -32,6 +35,7 @@ interface Props {
 
 export function CameraView({ onCapture, onCancel }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const viewRef = useRef<HTMLDivElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
 
@@ -63,11 +67,13 @@ export function CameraView({ onCapture, onCancel }: Props) {
       setError(null)
       stopStream()
       try {
+        // ask for the sensor's full resolution — the browser picks the largest
+        // supported mode ("ideal" is a hint, never a hard constraint)
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: mode },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
+            width: { ideal: 4096 },
+            height: { ideal: 3072 },
           },
           audio: false,
         })
@@ -161,18 +167,35 @@ export function CameraView({ onCapture, onCancel }: Props) {
 
   const capture = useCallback(() => {
     const v = videoRef.current
-    if (!v || !v.videoWidth) return
+    const box = viewRef.current
+    if (!v || !v.videoWidth || !box) return
+
+    // WYSIWYG: the preview renders the stream with object-cover inside the
+    // viewfinder box, so the user sees a CENTER CROP of the frame. Cut exactly
+    // that visible region at NATURAL resolution — the captured photo never
+    // shows more field of view than the preview did.
+    const vw = v.videoWidth
+    const vh = v.videoHeight
+    const bw = box.clientWidth
+    const bh = box.clientHeight
+    const scale = Math.max(bw / vw, bh / vh) // object-cover scale
+    const sw = Math.min(vw, Math.round(bw / scale))
+    const sh = Math.min(vh, Math.round(bh / scale))
+    const sx = Math.round((vw - sw) / 2)
+    const sy = Math.round((vh - sh) / 2)
+
     const canvas = document.createElement('canvas')
-    canvas.width = v.videoWidth
-    canvas.height = v.videoHeight
+    canvas.width = sw
+    canvas.height = sh
     const ctx = canvas.getContext('2d')!
     if (facing === 'user') {
-      // un-mirror for accuracy (preview shows a mirror; evidence must not)
+      // un-mirror for accuracy (preview shows a mirror; evidence must not).
+      // the cover crop is center-symmetric, so mirroring commutes with it.
       ctx.translate(canvas.width, 0)
       ctx.scale(-1, 1)
     }
-    ctx.drawImage(v, 0, 0, canvas.width, canvas.height)
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
+    ctx.drawImage(v, sx, sy, sw, sh, 0, 0, sw, sh)
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.95)
     stopStream()
     onCapture(dataUrl)
   }, [facing, onCapture, stopStream])
@@ -184,6 +207,26 @@ export function CameraView({ onCapture, onCancel }: Props) {
 
   return (
     <div className="overflow-hidden rounded-xl border border-teal-500/30 bg-black">
+      {/* system-camera handoff (available in every state — native apps shoot
+          with HDR/night processing a web stream cannot match) */}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0]
+          if (!f) return
+          const r = new FileReader()
+          r.onload = () => {
+            close()
+            onCapture(String(r.result))
+          }
+          r.readAsDataURL(f)
+          e.target.value = ''
+        }}
+      />
       <div className="flex items-center justify-between border-b border-teal-500/20 bg-card/90 px-3 py-2">
         <span className="flex items-center gap-2 text-xs font-semibold text-teal-200">
           <Camera className="h-3.5 w-3.5" /> Camera capture
@@ -207,29 +250,12 @@ export function CameraView({ onCapture, onCancel }: Props) {
               Cancel
             </Button>
           </div>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            capture="environment"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0]
-              if (!f) return
-              const r = new FileReader()
-              r.onload = () => {
-                close()
-                onCapture(String(r.result))
-              }
-              r.readAsDataURL(f)
-              e.target.value = ''
-            }}
-          />
         </div>
       ) : (
         <>
           {/* viewfinder */}
           <div
+            ref={viewRef}
             className="relative aspect-[4/3] w-full select-none overflow-hidden bg-black"
             onClick={tapFocus}
             role="presentation"
@@ -337,10 +363,19 @@ export function CameraView({ onCapture, onCancel }: Props) {
                 </Button>
               </div>
             </div>
-            <p className="px-1 text-center text-[10px] text-muted-foreground">
+            <p className="px-1 text-center text-[10px] leading-relaxed text-muted-foreground">
               {focusSupported ? 'Tap the viewfinder to focus · ' : ''}
               {torchSupported ? 'torch available · ' : ''}
-              captured at JPEG q=0.92 for OCR
+              captured = exactly what the frame shows · JPEG q=0.95
+            </p>
+            <p className="text-center">
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                className="text-[10px] text-teal-300/80 underline underline-offset-2 transition-colors hover:text-teal-200"
+              >
+                Phone camera app shoots better? Use the system camera instead
+              </button>
             </p>
           </div>
         </>

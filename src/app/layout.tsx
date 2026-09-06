@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
+import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 import { Providers } from "@/components/app/providers";
 
 const inter = Inter({
@@ -34,6 +35,9 @@ export default function RootLayout({
       >
         <Providers>
           {children}
+          {/* sonner — every app component uses toast() from 'sonner'; without
+              this mount, ALL feedback messages were silently invisible */}
+          <SonnerToaster position="bottom-center" closeButton duration={4000} />
           <Toaster />
         </Providers>
       </body>

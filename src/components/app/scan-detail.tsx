@@ -34,6 +34,7 @@ export function ScanDetail({
   const [newValue, setNewValue] = useState('')
   const [activeBox, setActiveBox] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(true)
+  const [pdfBusy, setPdfBusy] = useState(false)
 
   const boxes = useMemo(() => {
     if (!scan) return []
@@ -48,6 +49,19 @@ export function ScanDetail({
   }, [scan])
 
   if (!scan) return null
+
+  const exportPdf = async () => {
+    setPdfBusy(true)
+    try {
+      await generateScanReport(scan)
+      toast.success('PDF report downloaded')
+    } catch (e) {
+      console.error('[scan-detail] pdf export failed', e)
+      toast.error('PDF export failed — please try again')
+    } finally {
+      setPdfBusy(false)
+    }
+  }
 
   const act = async (finding: FindingDTO, action: 'ACCEPT' | 'MODIFY' | 'REJECT', body: Record<string, unknown> = {}) => {
     setBusyId(finding.id)
@@ -75,8 +89,8 @@ export function ScanDetail({
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[92vh] w-[min(1100px,95vw)] overflow-hidden p-0 sm:max-w-[min(1100px,95vw)]">
-        <DialogHeader className="border-b border-border px-5 py-4 pr-12">
+      <DialogContent className="flex max-h-[92vh] w-[min(1100px,95vw)] flex-col overflow-hidden p-0 supports-[height:100dvh]:max-h-[92dvh] sm:max-w-[min(1100px,95vw)]">
+        <DialogHeader className="shrink-0 border-b border-border px-5 py-4 pr-12">
           <div className="flex flex-wrap items-center gap-3">
             <ScrollText className="h-5 w-5 text-teal-300" />
             <DialogTitle className="font-mono text-base">{scan.fileName}</DialogTitle>
@@ -100,7 +114,7 @@ export function ScanDetail({
           </div>
         </DialogHeader>
 
-        <div className="grid max-h-[calc(92vh-140px)] grid-cols-1 gap-0 overflow-y-auto md:grid-cols-[minmax(280px,380px)_1fr]">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-y-auto overscroll-contain md:grid-cols-[minmax(280px,380px)_1fr]">
           {/* evidence column */}
           <div className="space-y-3 border-b border-border p-4 md:border-b-0 md:border-r">
             <div className="flex items-center justify-between">
@@ -210,17 +224,24 @@ export function ScanDetail({
                 </div>
               </div>
             )}
+          </div>
+        </div>
 
-            <div className="flex flex-wrap gap-2 pt-2">
-              <Button size="sm" variant="outline" onClick={() => generateScanReport(scan)}>
-                <FileDown className="mr-1 h-3.5 w-3.5" /> Export PDF report
+        {/* sticky action bar — Export PDF / Delete are ALWAYS reachable, no
+            matter how tall the findings list is or how small the screen */}
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-border bg-card/70 px-5 pt-3 pb-[max(env(safe-area-inset-bottom),0.75rem)]">
+          <p className="hidden text-[11px] text-muted-foreground sm:block">
+            AI reads the label · rules interpret the law · the inspector decides
+          </p>
+          <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
+            <Button size="sm" variant="outline" className="flex-1 sm:flex-none" disabled={pdfBusy} onClick={() => void exportPdf()}>
+              {pdfBusy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <FileDown className="mr-1 h-3.5 w-3.5" />} Export PDF report
+            </Button>
+            {onDelete && (
+              <Button size="sm" variant="ghost" className="flex-1 text-rose-300 hover:bg-rose-500/10 hover:text-rose-200 sm:flex-none" onClick={() => { onDelete(scan.id); onClose() }}>
+                <Trash2 className="mr-1 h-3.5 w-3.5" /> Delete scan
               </Button>
-              {onDelete && (
-                <Button size="sm" variant="ghost" className="text-rose-300 hover:bg-rose-500/10 hover:text-rose-200" onClick={() => { onDelete(scan.id); onClose() }}>
-                  <Trash2 className="mr-1 h-3.5 w-3.5" /> Delete scan
-                </Button>
-              )}
-            </div>
+            )}
           </div>
         </div>
       </DialogContent>

@@ -5,10 +5,12 @@
 import type { ScanDTO } from '@/lib/types'
 import { FIELD_LABEL } from '@/lib/rules/synonyms'
 
+/** the built-in helvetica font has no rupee glyph — render it as Rs. */
+const pdfSafe = (s: string): string => s.replace(/₹/g, 'Rs.')
+
 export async function generateScanReport(scan: ScanDTO): Promise<void> {
   const { jsPDF } = await import('jspdf')
   const autoTable = (await import('jspdf-autotable')).default
-
   const doc = new jsPDF({ unit: 'mm', format: 'a4' })
   const W = 210
   const M = 14
@@ -53,12 +55,12 @@ export async function generateScanReport(scan: ScanDTO): Promise<void> {
   doc.setFont('helvetica', 'normal')
   const meta: [string, string][] = [
     ['Scan ID', scan.id.slice(0, 12)],
-    ['File', scan.fileName],
+    ['File', pdfSafe(scan.fileName)],
     ['Scanned', new Date(scan.createdAt).toLocaleString('en-IN')],
-    ['Category', scan.category],
+    ['Category', pdfSafe(scan.category)],
     ['Rule version', scan.ruleVersion],
     ['Language', `${scan.languageLabel} (OCR: ${scan.ocrLangs})`],
-    ['Detection', `${scan.detectionMethod.toUpperCase()} · ${scan.scriptDetected} script`],
+    ['Detection', pdfSafe(`${scan.detectionMethod.toUpperCase()} · ${scan.scriptDetected} script`)],
     ['Mean confidence', `${(scan.overallConfidence * 100).toFixed(0)}%`],
   ]
   y += 6
@@ -87,8 +89,9 @@ export async function generateScanReport(scan: ScanDTO): Promise<void> {
       doc.setFontSize(9)
       doc.setTextColor(11, 18, 32)
       doc.text('Package evidence', M, y)
-      // right column image
-      doc.addImage(scan.imageData, 'JPEG', W - M - iw, y + 3, iw, Math.min(ih, 120))
+      // right column image — jsPDF needs the format to match the data URL
+      const fmt = scan.imageData.startsWith('data:image/png') ? 'PNG' : 'JPEG'
+      doc.addImage(scan.imageData, fmt, W - M - iw, y + 3, iw, Math.min(ih, 120))
     }
   } catch { /* image optional */ }
 
@@ -98,7 +101,7 @@ export async function generateScanReport(scan: ScanDTO): Promise<void> {
     head: [['Field', 'Extracted value', 'OCR conf.']],
     body: (scan.fields ?? []).map((f) => [
       FIELD_LABEL[f.field as keyof typeof FIELD_LABEL] ?? f.field,
-      f.value ?? '(not detected)',
+      pdfSafe(f.value ?? '(not detected)'),
       `${(f.confidence * 100).toFixed(0)}%`,
     ]),
     theme: 'grid',
@@ -113,7 +116,7 @@ export async function generateScanReport(scan: ScanDTO): Promise<void> {
   const body: Row[] = scan.findings.map((f) => [
     `${f.ruleTitle}\n${f.ruleRef}`,
     f.severity,
-    (f.extractedValue ?? '—') + (f.reviewedValue ? `\n→ ${f.reviewedValue}` : ''),
+    pdfSafe((f.extractedValue ?? '—') + (f.reviewedValue ? `\n→ ${pdfSafe(f.reviewedValue)}` : '')),
     `${(f.confidence * 100).toFixed(0)}%`,
     f.status,
   ])
@@ -161,7 +164,20 @@ export async function generateScanReport(scan: ScanDTO): Promise<void> {
   }
 
   const stamp = new Date(scan.createdAt).toISOString().slice(0, 10)
-  doc.save(`LabelIQ-report-${scan.id.slice(0, 8)}-${stamp}.pdf`)
+  const filename = `LabelIQ-report-${scan.id.slice(0, 8)}-${stamp}.pdf`
+
+  // Explicit blob + in-DOM anchor download — more reliable on Android Chrome
+  // than jsPDF's save(), which clicks a detached anchor some builds ignore.
+  const blob = doc.output('blob')
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.rel = 'noopener'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }
 
 /** History table CSV export. */
