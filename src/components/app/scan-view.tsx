@@ -17,16 +17,18 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { toast } from 'sonner'
 import {
   Camera, FileImage, Languages, Loader2, RefreshCw, RotateCcw, RotateCw, Save, ScanLine,
-  Sparkles, Trash2, Upload, Wand2, X, CheckCircle2, AlertTriangle, CircleDot, Bot,
+  Sparkles, Trash2, Upload, Wand2, CheckCircle2, AlertTriangle, CircleDot, Bot,
 } from 'lucide-react'
 import type { ExtractedField, OcrLine, ScanDTO } from '@/lib/types'
 import { CATEGORIES } from '@/lib/rules/repository'
 import { mergeVlmFields, suggestCategory, type VlmFieldInput } from '@/lib/rules/extract'
 import { FIELD_LABEL } from '@/lib/rules/synonyms'
+import { byokHeaders } from '@/lib/vault/vault'
 import { DEFAULT_PREPROCESS, loadImage, processImage, type PreprocessOptions } from '@/lib/ocr/preprocess'
 import { ocrPipeline, type OcrProgress, type OcrResult } from '@/lib/ocr/pipeline'
 import { DEMO_SAMPLES, renderSampleImage, getSample } from '@/lib/samples'
 import { ConfidenceBar, EvidenceOverlay, ScriptChips, SeverityBadge, StatusBadge } from './bits'
+import { CameraView } from './camera-view'
 
 type Phase = 'source' | 'adjust' | 'running' | 'results'
 
@@ -38,6 +40,7 @@ interface VlmExtractResponse {
   attempts: number
   elapsedMs: number
   failoverFrom?: string
+  keySource?: 'byok' | 'server'
 }
 
 const LANG_OPTIONS: { value: string; label: string; langs: string[] }[] = [
@@ -67,8 +70,6 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
   const [activeFieldIdx, setActiveFieldIdx] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
   const [cameraOn, setCameraOn] = useState(false)
-  const videoRef = useRef<HTMLVideoElement | null>(null)
-  const streamRef = useRef<MediaStream | null>(null)
   const [ocrFields, setOcrFields] = useState<ExtractedField[] | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
@@ -132,43 +133,25 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
     setPhase('adjust')
   }, [])
 
-  // camera
-  const openCamera = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 } } })
-      streamRef.current = stream
-      setCameraOn(true)
-      setPhase('source')
-    } catch {
-      toast.error('Camera unavailable — use upload or demo labels')
-    }
-  }, [])
+  // camera (CameraView owns the stream; we just consume the capture)
+  const openCamera = useCallback(() => setCameraOn(true), [])
 
-  useEffect(() => {
-    if (cameraOn && videoRef.current && streamRef.current) {
-      videoRef.current.srcObject = streamRef.current
-      videoRef.current.play().catch(() => undefined)
-    }
-  }, [cameraOn])
-
-  const capture = useCallback(() => {
-    const v = videoRef.current
-    if (!v) return
+  const onCameraCapture = useCallback(async (dataUrl: string) => {
+    setCameraOn(false)
+    // same downscale/normalize path as file uploads
+    const img = await loadImage(dataUrl)
+    const scale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight))
     const canvas = document.createElement('canvas')
-    canvas.width = v.videoWidth
-    canvas.height = v.videoHeight
-    canvas.getContext('2d')!.drawImage(v, 0, 0)
+    canvas.width = img.naturalWidth * scale
+    canvas.height = img.naturalHeight * scale
+    canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height)
     setImgUrl(canvas.toDataURL('image/jpeg', 0.85))
     setFileName(`capture-${Date.now()}.jpg`)
     setDemoMode(false)
     setDemoId(null)
+    setPre(DEFAULT_PREPROCESS)
     setResult(null)
     setOcrFields(null)
-    setPre(DEFAULT_PREPROCESS)
-    // stop camera
-    streamRef.current?.getTracks().forEach((t) => t.stop())
-    streamRef.current = null
-    setCameraOn(false)
     setPhase('adjust')
   }, [])
 
@@ -244,7 +227,7 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
     try {
       const res = await fetch('/api/ai/extract', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...byokHeaders() },
         body: JSON.stringify({ imageData: result.displayDataUrl, ocrText: result.ocrText }),
       })
       const json = await res.json()
@@ -326,24 +309,7 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
       </header>
 
       {cameraOn && (
-        <Card className="border-teal-500/30">
-          <CardContent className="flex flex-col items-center gap-3 py-6">
-            <video ref={videoRef} playsInline muted className="max-h-72 rounded-md border border-border" />
-            <div className="flex gap-2">
-              <Button onClick={capture}><Camera className="mr-2 h-4 w-4" /> Capture</Button>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  streamRef.current?.getTracks().forEach((t) => t.stop())
-                  streamRef.current = null
-                  setCameraOn(false)
-                }}
-              >
-                <X className="mr-2 h-4 w-4" /> Cancel
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+        <CameraView onCapture={onCameraCapture} onCancel={() => setCameraOn(false)} />
       )}
 
       {phase === 'source' && !cameraOn && (
@@ -537,26 +503,29 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
               <CardHeader className="pb-2">
                 <CardTitle className="flex items-center justify-between text-sm">
                   <span>Normalized fields</span>
-                  {(needsAi || vlm) && (
-                    <span className="flex items-center gap-2">
-                      {vlm && !vlmBusy && (
-                        <span className="font-mono text-[10px] text-teal-300/80">
-                          {vlm.provider} · {vlm.model} · {vlm.attempts} attempt{vlm.attempts > 1 ? 's' : ''}
-                        </span>
-                      )}
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 border-teal-500/40 px-2 text-[11px] text-teal-300 hover:bg-teal-500/10"
-                        onClick={runVlm}
-                        disabled={vlmBusy}
-                        title="Ask the vision model to read fields the OCR pass missed"
-                      >
-                        {vlmBusy ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Bot className="mr-1 h-3 w-3" />}
-                        {vlmBusy ? 'Reading label…' : vlm ? 'Re-run AI' : 'AI fallback'}
-                      </Button>
-                    </span>
-                  )}
+                  <span className="flex items-center gap-2">
+                    {needsAi && !vlm && (
+                      <span className="flex items-center gap-1 rounded-md bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                        <AlertTriangle className="h-3 w-3" /> GAPS DETECTED
+                      </span>
+                    )}
+                    {vlm && !vlmBusy && (
+                      <span className="font-mono text-[10px] text-teal-300/80">
+                        {vlm.provider} · {vlm.model} · {vlm.attempts} attempt{vlm.attempts > 1 ? 's' : ''} · {(vlm.elapsedMs / 1000).toFixed(1)}s
+                      </span>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 border-teal-500/40 px-2 text-[11px] text-teal-300 hover:bg-teal-500/10"
+                      onClick={runVlm}
+                      disabled={vlmBusy}
+                      title="Read the label with the vision model (GLM-4.6V-Flash) — fills fields the OCR pass missed, never overrides OCR"
+                    >
+                      {vlmBusy ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Bot className="mr-1 h-3 w-3" />}
+                      {vlmBusy ? 'Reading label…' : vlm ? 'Re-run AI' : 'AI extract'}
+                    </Button>
+                  </span>
                 </CardTitle>
               </CardHeader>
               <CardContent>

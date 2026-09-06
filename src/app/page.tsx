@@ -10,8 +10,9 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { APP_VERSION, BUILD_DATE } from '@/lib/version'
 import {
-  ClipboardCheck, History, LayoutDashboard, ScanLine, Scale, ShieldCheck,
+  ClipboardCheck, History, LayoutDashboard, ScanLine, Scale, Settings, ShieldCheck,
 } from 'lucide-react'
 import type { ScanDTO } from '@/lib/types'
 import { Dashboard } from '@/components/app/dashboard'
@@ -20,6 +21,7 @@ import { ReviewQueue } from '@/components/app/review-queue'
 import { HistoryView } from '@/components/app/history-view'
 import { RulesBrowser } from '@/components/app/rules-browser'
 import { ScanDetail } from '@/components/app/scan-detail'
+import { SettingsDialog } from '@/components/app/settings-dialog'
 
 type View = 'dashboard' | 'scan' | 'review' | 'history' | 'rules'
 
@@ -34,6 +36,7 @@ const NAV: { id: View; label: string; icon: React.ReactNode }[] = [
 export default function Home() {
   const [view, setView] = useState<View>('dashboard')
   const [detail, setDetail] = useState<ScanDTO | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const qc = useQueryClient()
 
   const refresh = useCallback(() => {
@@ -56,6 +59,13 @@ export default function Home() {
                 <span className="text-lg font-bold tracking-tight">Label<span className="text-teal-300">IQ</span></span>
                 <Badge variant="outline" className="hidden border-teal-500/30 font-mono text-[10px] text-teal-300/90 sm:inline-flex">
                   SIH26034
+                </Badge>
+                <Badge
+                  variant="outline"
+                  className="border-teal-500/30 font-mono text-[10px] text-teal-300/90"
+                  title={`build ${BUILD_DATE} — verify at /api/health`}
+                >
+                  v{APP_VERSION}
                 </Badge>
               </div>
               <p className="hidden text-[11px] text-muted-foreground md:block">
@@ -82,7 +92,18 @@ export default function Home() {
             ))}
           </nav>
 
-          <Button size="sm" className="ml-auto gap-2 md:ml-2" onClick={() => setView('scan')}>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-auto h-9 w-9 p-0 text-muted-foreground hover:bg-teal-500/10 hover:text-teal-200 md:ml-0"
+            onClick={() => setSettingsOpen(true)}
+            aria-label="Settings"
+            title="Settings — AI status, your own API keys"
+          >
+            <Settings className="h-4 w-4" />
+          </Button>
+
+          <Button size="sm" className="gap-2 md:ml-2" onClick={() => setView('scan')}>
             <ScanLine className="h-4 w-4" /> <span className="hidden sm:inline">New scan</span>
           </Button>
         </div>
@@ -122,10 +143,13 @@ export default function Home() {
             AI reads the label. Rules interpret the law. The inspector makes the final call.
           </span>
           <span className="font-mono">
-            OCR · auto language detection · versioned rule engine · human-in-the-loop
+            v{APP_VERSION} ({BUILD_DATE}) · OCR · auto language detection · AI fallback · BYOK keys · versioned rule engine · human-in-the-loop
           </span>
         </div>
       </footer>
+
+      {/* settings dialog */}
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
 
       {/* scan detail dialog */}
       {detail && (

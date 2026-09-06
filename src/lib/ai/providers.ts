@@ -25,16 +25,24 @@ export interface ProviderConfig {
   extraBody?: Record<string, unknown>
 }
 
-/** Providers currently usable from env. Order = failover order. */
-export function activeProviders(): ProviderConfig[] {
+/** Per-request BYOK overrides (already sanitized by the route layer). */
+export interface ProviderOverrides {
+  zaiKey?: string
+  zaiModel?: string
+  nimKey?: string
+  nimModel?: string
+}
+
+/** Providers usable from env, optionally overridden per-request by BYOK keys. Order = failover order. */
+export function activeProviders(overrides: ProviderOverrides = {}): ProviderConfig[] {
   const out: ProviderConfig[] = []
 
-  const zaiKey = process.env.ZAI_API_KEY?.trim()
-  const zaiModel = process.env.ZAI_MODEL?.trim() || 'glm-4.6v-flash'
+  const zaiKey = overrides.zaiKey || process.env.ZAI_API_KEY?.trim()
+  const zaiModel = overrides.zaiModel || process.env.ZAI_MODEL?.trim() || 'glm-4.6v-flash'
   if (zaiKey) {
     out.push({
       id: 'zai',
-      label: 'Z.ai GLM',
+      label: overrides.zaiKey ? 'Z.ai GLM (your key)' : 'Z.ai GLM',
       baseUrl: 'https://api.z.ai/api/paas/v4',
       apiKey: zaiKey,
       model: zaiModel,
@@ -46,12 +54,12 @@ export function activeProviders(): ProviderConfig[] {
     })
   }
 
-  const nimKey = process.env.NIM_API_KEY?.trim()
-  const nimModel = process.env.NIM_MODEL?.trim()
+  const nimKey = overrides.nimKey || process.env.NIM_API_KEY?.trim()
+  const nimModel = overrides.nimModel || process.env.NIM_MODEL?.trim()
   if (nimKey && nimModel) {
     out.push({
       id: 'nim',
-      label: 'NVIDIA NIM',
+      label: overrides.nimKey ? 'NVIDIA NIM (your key)' : 'NVIDIA NIM',
       baseUrl: 'https://integrate.api.nvidia.com/v1',
       apiKey: nimKey,
       model: nimModel,

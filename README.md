@@ -28,7 +28,8 @@ Every pre-packaged commodity sold in India must carry mandatory declarations —
 
 ## Features
 
-- **Camera / upload scanning** with client-side preprocessing (grayscale → contrast → Otsu binarization → rotation → scaling) — an OpenCV-style quality gate before OCR runs.
+- **Camera / upload scanning** with client-side preprocessing (grayscale → contrast → Otsu binarization → rotation → scaling) — an OpenCV-style quality gate before OCR runs. Camera v2 adds torch, zoom, tap-to-focus, front/back switching, an alignment frame and a high-quality JPEG capture path, with a system-camera file fallback.
+- **Deployment transparency**: version badge in the header and `GET /api/health` (version, build date, AI provider status, scan count) so anyone can verify what is live.
 - **Automatic language detection** for 9 Indic scripts (Devanagari, Bengali, Gurmukhi, Gujarati, Odia, Tamil, Telugu, Kannada, Malayalam) + English, via Tesseract OSD plus Unicode script-ratio analysis; the label is re-OCR'd with the right language packs. Bilingual labels (e.g. Hindi + English) are handled natively.
 - **Field extraction & normalization**: MRP, net quantity, dates (absolute + relative like "best before 9 months from packaging"), manufacturer, weights/sizes, batch — with per-field confidence.
 - **Deterministic rules engine**: 13 rules in 3 layers (TEXT / VISUAL / CATEGORY), 4 rule versions with a timeline, ENFORCED vs INFORMATIVE severity, and an auditable `ruleRef` for every finding (e.g. *PCR 2011, R6(1)*).
@@ -104,6 +105,11 @@ ZAI_MODEL=glm-4.6v-flash
 # NIM_MODEL=meta/llama-4-scout-17b-16e-instruct
 ```
 
+**Bring your own keys (BYOK)** — no server keys needed: Settings → *My keys* stores your own
+Z.ai / NIM keys encrypted with AES-256-GCM (PBKDF2 passphrase, 150k iterations) in the browser.
+Unlocked keys ride along as per-request headers and take priority over server env keys;
+they are never written to the database or logs.
+
 ## API
 
 | Method | Route | Purpose |
@@ -113,8 +119,9 @@ ZAI_MODEL=glm-4.6v-flash
 | GET | `/api/scans/{id}` | Scan with findings |
 | DELETE | `/api/scans/{id}` | Delete scan (cascades findings) |
 | PATCH | `/api/findings/{id}` | Inspector action: `ACCEPT` / `MODIFY` (re-validates) / `REJECT` |
-| POST | `/api/ai/extract` | VLM fallback: image → verbatim field reads (GLM → NIM failover, retry w/ backoff) |
+| POST | `/api/ai/extract` | VLM fallback: image → verbatim field reads (GLM → NIM failover, retry w/ backoff, BYOK headers) |
 | GET | `/api/stats` | Dashboard KPIs + chart aggregates |
+| GET | `/api/health` | Deployment verification: version, build date, AI provider status, scan count |
 
 ## Project layout
 
@@ -128,7 +135,8 @@ ZAI_MODEL=glm-4.6v-flash
 
 - Bounding-box field selection on the evidence image (MRP / batch / dates) for challenging pre-printed labels
 - ~~VLM (vision-language model) fallback extraction for low-quality photos, with a pluggable provider layer + retry/backoff~~ — **shipped** (`src/lib/ai/`, `POST /api/ai/extract`)
-- Device-local (password-encrypted) bring-your-own-key UI: provider selection, model, budget
+- ~~Device-local (encrypted) bring-your-own-key UI: provider, model, passphrase vault~~ — **shipped v2.1** (`src/lib/vault/vault.ts`, Settings dialog, per-request BYOK headers)
+- ~~Camera v2: torch, zoom, tap-to-focus, front/back switch, guidance frame~~ — **shipped v2.1** (`src/components/app/camera-view.tsx`)
 - Barcode / QR cross-checks against batch and expiry data
 - Inspector analytics export for enforcement planning
 

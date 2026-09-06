@@ -14,6 +14,7 @@ import {
   type ChatMessage,
   type ContentPart,
   type ProviderConfig,
+  type ProviderOverrides,
 } from './providers'
 import type { ChatUsage } from './providers'
 
@@ -59,6 +60,8 @@ export interface VlmExtractResult {
   usage: ChatUsage | null
   /** set when the primary provider failed over to the backup */
   failoverFrom?: string
+  /** 'byok' when user-supplied keys served the request, 'server' otherwise */
+  keySource?: 'byok' | 'server'
 }
 
 export class VlmUnavailableError extends Error {
@@ -155,11 +158,13 @@ export async function vlmExtractLabel(
   imageDataUrl: string,
   ocrText: string | null,
   onRetry?: (provider: string, attempt: number, delayMs: number, err: { kind: string; message: string }) => void,
+  overrides: ProviderOverrides = {},
 ): Promise<VlmExtractResult> {
-  const providers = activeProviders()
+  const providers = activeProviders(overrides)
   if (providers.length === 0) {
-    throw new VlmUnavailableError('No AI provider configured (set ZAI_API_KEY or NIM_API_KEY)', [])
+    throw new VlmUnavailableError('No AI provider configured (set ZAI_API_KEY or NIM_API_KEY, or unlock your own keys in Settings)', [])
   }
+  const keySource: 'byok' | 'server' = overrides.zaiKey || overrides.nimKey ? 'byok' : 'server'
 
   const errors: string[] = []
   for (let i = 0; i < providers.length; i++) {
@@ -174,6 +179,7 @@ export async function vlmExtractLabel(
         elapsedMs,
         usage,
         failoverFrom: i > 0 ? providers[i - 1].label : undefined,
+        keySource,
       }
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err))
