@@ -1,0 +1,26 @@
+# dependencies
+node_modules
+
+# next.js
+/.next/
+/out/
+next-env.d.ts
+*.tsbuildinfo
+
+# production
+/build
+
+# env files — never commit secrets
+.env
+.env.*
+!.env.example
+
+# database (local SQLite + seed data)
+db/
+*.db
+*.db-journal
+
+# misc
+.DS_Store
+*.pem
+*.log

@@ -1,0 +1,82 @@
+// LabelIQ — SIH26034
+// Legal Metrology (Packaged Commodities) label compliance scanner
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// A single label scan: one package image processed by the OCR pipeline
+model Scan {
+  id               String    @id @default(cuid())
+  fileName         String
+  // full image (compressed dataURL) shown in UI + embedded in PDF report
+  imageData        String
+  // OCR pipeline output
+  ocrText          String
+  lines            String    @default("[]") // JSON: [{ text, bbox, confidence }]
+  // language detection result
+  scriptDetected   String    @default("Latin") // e.g. Devanagari, Tamil, Latin
+  languageLabel    String    @default("English") // human label e.g. "Hindi + English"
+  ocrLangs         String    @default("eng") // tesseract codes used e.g. "hin+eng"
+  languageRatios   String    @default("{}") // JSON: { Devanagari: 0.68, Latin: 0.32 }
+  detectionMethod  String    @default("unicode") // osd | unicode | manual
+  // classification
+  category         String    @default("General")
+  categorySource   String    @default("manual") // auto | manual
+  ruleVersion      String    @default("PCR-2011+2026A1")
+  // normalized fields extracted from the label (JSON)
+  fields           String    @default("[]")
+  // aggregate outcome
+  overallConfidence Float    @default(0)
+  status           String    @default("PENDING_REVIEW") // COMPLIANT | NON_COMPLIANT | PENDING_REVIEW | REVIEWED
+  reviewNote       String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  findings         Finding[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([category])
+}
+
+// One rule evaluation result per (scan, rule)
+model Finding {
+  id             String    @id @default(cuid())
+  scanId         String
+  scan           Scan      @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  ruleId         String // e.g. R-DECL-MRP
+  ruleRef        String // e.g. "PCR 2011 R6(1)(e)"
+  ruleTitle      String
+  ruleLayer      String // TEXT | VISUAL | CATEGORY
+  field          String // MRP | NET_QTY | MFG_DATE | ...
+
+  // evaluation
+  severity       String // COMPLIANT | VIOLATION | MISSING | WARNING
+  extractedValue String?
+  expectedFormat String?
+  reason         String
+  confidence     Float    @default(0)
+  // evidence: bbox in processed-image coords (JSON {x,y,w,h})
+  evidenceBox    String?
+  evidenceText   String?
+
+  // human-in-the-loop
+  status         String    @default("AUTO") // AUTO | PENDING | ACCEPTED | MODIFIED | REJECTED
+  inspectorNote  String?
+  reviewedAt     DateTime?
+  reviewedValue  String?
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([scanId])
+  @@index([status])
+  @@index([severity])
+}
