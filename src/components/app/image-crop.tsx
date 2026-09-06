@@ -93,6 +93,17 @@ export function ImageCrop({
     return () => window.removeEventListener('keydown', onKey)
   }, [onCancel, busy])
 
+  // freeze the page behind the overlay so touch scroll can't fight the editor
+  // (iOS rubber-banding / momentum scroll under fixed overlays)
+  useEffect(() => {
+    const b = document.body
+    const prev = b.style.overflow
+    b.style.overflow = 'hidden'
+    return () => {
+      b.style.overflow = prev
+    }
+  }, [])
+
   // ---------- pointer interaction ----------
 
   const onPointerDown = (e: React.PointerEvent, mode: 'move' | Handle) => {
@@ -194,8 +205,8 @@ export function ImageCrop({
     : []
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-background/97 backdrop-blur-sm">
-      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+    <div className="fixed inset-x-0 top-0 z-50 flex h-screen flex-col bg-background/97 backdrop-blur-sm supports-[height:100dvh]:h-dvh">
+      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-2 sm:py-3">
         <div className="flex items-center gap-2">
           <Crop className="h-4 w-4 text-teal-300" />
           <span className="text-sm font-semibold">Crop the label region</span>
@@ -207,7 +218,7 @@ export function ImageCrop({
 
       <div
         ref={areaRef}
-        className="relative flex flex-1 touch-none select-none items-center justify-center overflow-hidden p-4"
+        className="relative flex min-h-0 flex-1 touch-none select-none items-center justify-center overflow-hidden p-4"
       >
         <img
           ref={imgRef}
@@ -264,12 +275,12 @@ export function ImageCrop({
         )}
       </div>
 
-      <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-3">
-        <p className="text-[11px] leading-tight text-muted-foreground">
+      <footer className="flex flex-col gap-2 border-t border-border px-4 pt-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+        <p className="text-[10px] leading-tight text-muted-foreground sm:text-[11px]">
           Drag to move · handles to resize · crop is cut at full resolution. Cropping to the
           label text improves OCR and the AI reader.
         </p>
-        <div className="flex gap-2">
+        <div className="flex w-full gap-2 sm:w-auto">
           <Button
             variant="outline"
             size="sm"
@@ -282,7 +293,7 @@ export function ImageCrop({
           >
             <RotateCcw className="mr-1 h-3.5 w-3.5" /> Reset
           </Button>
-          <Button size="sm" onClick={() => void apply()} disabled={busy || !sel}>
+          <Button size="sm" className="flex-1 sm:flex-none" onClick={() => void apply()} disabled={busy || !sel}>
             {busy ? <Check className="mr-1 h-3.5 w-3.5 animate-pulse" /> : <Check className="mr-1 h-3.5 w-3.5" />}
             Apply crop
           </Button>

@@ -2,12 +2,12 @@
 // Bump APP_VERSION on every deploy-worthy change so users can verify
 // what's live via the header badge or GET /api/health.
 
-export const APP_VERSION = '2.2.0'
+export const APP_VERSION = '2.2.1'
 export const BUILD_DATE = '2026-09-06'
 
 /** feature registry surfaced in /api/health — verify claims against reality */
 export const FEATURES = {
-  imageCrop: 'Full-screen crop editor (drag / resize, natural-resolution cut) in the scan flow and from results',
+  imageCrop: 'Full-screen crop editor (drag / resize, natural-resolution cut) — mobile-safe: dynamic-viewport height, safe-area footer, Apply always reachable without scrolling',
   cameraV2: 'getUserMedia camera with torch, zoom, tap-to-focus, front/back switch, guidance frame',
   aiFallback: 'VLM label extraction — Z.ai GLM primary (15-attempt backoff) with NVIDIA NIM failover',
   aiAccessPassword: 'Shared server AI key gated by an access password — unlock once per session (POST /api/ai/unlock)',
