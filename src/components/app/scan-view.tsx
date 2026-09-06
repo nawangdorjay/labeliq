@@ -16,7 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { toast } from 'sonner'
 import {
-  Camera, FileImage, Languages, Loader2, RefreshCw, RotateCcw, RotateCw, Save, ScanLine,
+  Camera, Crop, FileImage, Languages, Loader2, RefreshCw, RotateCcw, RotateCw, Save, ScanLine,
   Sparkles, Trash2, Upload, Wand2, CheckCircle2, AlertTriangle, CircleDot, Bot,
 } from 'lucide-react'
 import type { ExtractedField, OcrLine, ScanDTO } from '@/lib/types'
@@ -24,11 +24,14 @@ import { CATEGORIES } from '@/lib/rules/repository'
 import { mergeVlmFields, suggestCategory, type VlmFieldInput } from '@/lib/rules/extract'
 import { FIELD_LABEL } from '@/lib/rules/synonyms'
 import { byokHeaders } from '@/lib/vault/vault'
+import { clearAiToken, getAiToken } from '@/lib/vault/ai-access'
 import { DEFAULT_PREPROCESS, loadImage, processImage, type PreprocessOptions } from '@/lib/ocr/preprocess'
 import { ocrPipeline, type OcrProgress, type OcrResult } from '@/lib/ocr/pipeline'
 import { DEMO_SAMPLES, renderSampleImage, getSample } from '@/lib/samples'
 import { ConfidenceBar, EvidenceOverlay, ScriptChips, SeverityBadge, StatusBadge } from './bits'
 import { CameraView } from './camera-view'
+import { ImageCrop } from './image-crop'
+import { AiPassDialog } from './ai-pass-dialog'
 
 type Phase = 'source' | 'adjust' | 'running' | 'results'
 
@@ -77,6 +80,8 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
   const [demoId, setDemoId] = useState<string | null>(null)
   const [vlm, setVlm] = useState<VlmExtractResponse | null>(null)
   const [vlmBusy, setVlmBusy] = useState(false)
+  const [cropOn, setCropOn] = useState(false)
+  const [passOpen, setPassOpen] = useState(false)
 
   // preview canvas refresh when preprocess options change
   useEffect(() => {
@@ -221,28 +226,94 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
     [phase, result, demoMode, ocrFields, meanOcrConf],
   )
 
-  const runVlm = useCallback(async () => {
-    if (!result || vlmBusy) return
-    setVlmBusy(true)
-    try {
-      const res = await fetch('/api/ai/extract', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', ...byokHeaders() },
-        body: JSON.stringify({ imageData: result.displayDataUrl, ocrText: result.ocrText }),
-      })
-      const json = await res.json()
-      if (!res.ok) throw new Error(String(json.error ?? 'AI extraction failed'))
-      const data = json as VlmExtractResponse
-      setVlm(data)
-      setOcrFields((prev) => (prev ? mergeVlmFields(prev, data.fields) : prev))
-      const filled = data.fields.length
-      toast.success(`AI fallback: ${filled} field${filled === 1 ? '' : 's'} read by ${data.provider}${data.failoverFrom ? ` (after ${data.failoverFrom} failed)` : ''}`)
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'AI fallback failed')
-    } finally {
-      setVlmBusy(false)
-    }
-  }, [result, vlmBusy])
+  // AI extraction. With the user's own key (BYOK vault unlocked) the call
+  // goes straight out. Otherwise the SERVER's shared key is used — which
+  // needs the access password: if no session token yet, prompt for it and
+  // auto-continue once unlocked (token lives in sessionStorage = once per
+  // active session, re-asked after the site is closed).
+  const runVlm = useCallback(
+    async (tokenOverride?: string) => {
+      if (!result || vlmBusy) return
+      const byok = byokHeaders()
+      const hasOwnKey = !!(byok['x-zai-key'] || byok['x-nim-key'])
+      const headers: Record<string, string> = { 'content-type': 'application/json', ...byok }
+
+      if (!hasOwnKey) {
+        const token = tokenOverride ?? getAiToken()
+        if (token) {
+          headers['x-ai-token'] = token
+        } else {
+          setPassOpen(true)
+          return
+        }
+      }
+
+      setVlmBusy(true)
+      try {
+        const res = await fetch('/api/ai/extract', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ imageData: result.displayDataUrl, ocrText: result.ocrText }),
+        })
+        const json = await res.json()
+        if (res.status === 401 && json?.code === 'AI_PASSWORD_REQUIRED') {
+          // token missing / stale (e.g. password rotated) → ask again
+          clearAiToken()
+          setPassOpen(true)
+          return
+        }
+        if (!res.ok) throw new Error(String(json.error ?? 'AI extraction failed'))
+        const data = json as VlmExtractResponse
+        setVlm(data)
+        setOcrFields((prev) => (prev ? mergeVlmFields(prev, data.fields) : prev))
+        const filled = data.fields.length
+        toast.success(`AI fallback: ${filled} field${filled === 1 ? '' : 's'} read by ${data.provider}${data.failoverFrom ? ` (after ${data.failoverFrom} failed)` : ''}`)
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : 'AI fallback failed')
+      } finally {
+        setVlmBusy(false)
+      }
+    },
+    [result, vlmBusy],
+  )
+
+  // called by the password dialog after a successful unlock — auto-continue
+  const onAiUnlocked = useCallback(
+    (token: string) => {
+      setPassOpen(false)
+      void runVlm(token)
+    },
+    [runVlm],
+  )
+
+  // crop applied in the ADJUST phase — replaces the working image, preview
+  // refreshes automatically via the preprocess effect
+  const onCropApply = useCallback(
+    (dataUrl: string) => {
+      setCropOn(false)
+      setImgUrl(dataUrl)
+      setFileName((f) => f.replace(/\.(jpe?g|png|webp)$/i, '-cropped.$1'))
+      toast.success('Image cropped — re-run OCR on the tighter region for better accuracy')
+    },
+    [],
+  )
+
+  // crop applied from the RESULTS phase — crop the original, drop results,
+  // back to adjust so OCR runs on the cropped image
+  const onCropRescan = useCallback(
+    (dataUrl: string) => {
+      setCropOn(false)
+      setImgUrl(dataUrl)
+      setFileName((f) => f.replace(/\.(jpe?g|png|webp)$/i, '-cropped.$1'))
+      setResult(null)
+      setOcrFields(null)
+      setVlm(null)
+      setPreviewUrl(null)
+      setPhase('adjust')
+      toast('Cropped — adjust and re-run the OCR pipeline', { description: 'A tighter label region usually lifts OCR confidence and field hits' })
+    },
+    [],
+  )
 
   const saveScan = useCallback(async () => {
     if (!result) return
@@ -298,6 +369,19 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
 
   return (
     <div className="space-y-4">
+      {cropOn && imgUrl && (
+        <ImageCrop
+          src={imgUrl}
+          onApply={phase === 'results' ? onCropRescan : onCropApply}
+          onCancel={() => setCropOn(false)}
+        />
+      )}
+
+      {/* remounts on every open so the password field/error state starts fresh */}
+      {passOpen && (
+        <AiPassDialog key="ai-pass" open onOpenChange={setPassOpen} onUnlocked={onAiUnlocked} />
+      )}
+
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold tracking-tight">Scan a package label</h2>
@@ -342,6 +426,17 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
             <Card>
               <CardHeader className="pb-3"><CardTitle className="text-sm">Image adjustments</CardTitle></CardHeader>
               <CardContent className="space-y-4">
+                <Button
+                  variant="outline"
+                  className="w-full border-teal-500/40 text-teal-300 hover:bg-teal-500/10"
+                  onClick={() => setCropOn(true)}
+                >
+                  <Crop className="mr-2 h-4 w-4" /> Crop image
+                </Button>
+                <p className="-mt-2 text-[11px] leading-tight text-muted-foreground">
+                  Cut to just the label text — removes background, glare and neighbouring
+                  products so OCR (and the AI reader) focus on the right region.
+                </p>
                 <div className="flex items-center justify-between gap-2">
                   <Button size="sm" variant="outline" onClick={() => setPre((p) => ({ ...p, rotation: p.rotation - 90 }))}><RotateCcw className="h-4 w-4" /></Button>
                   <span className="text-xs text-muted-foreground">rotate {((pre.rotation % 360) + 360) % 360}°</span>
@@ -512,13 +607,14 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
                     {vlm && !vlmBusy && (
                       <span className="font-mono text-[10px] text-teal-300/80">
                         {vlm.provider} · {vlm.model} · {vlm.attempts} attempt{vlm.attempts > 1 ? 's' : ''} · {(vlm.elapsedMs / 1000).toFixed(1)}s
+                        {vlm.keySource === 'server' ? ' · shared key' : vlm.keySource === 'byok' ? ' · your key' : ''}
                       </span>
                     )}
                     <Button
                       size="sm"
                       variant="outline"
                       className="h-7 border-teal-500/40 px-2 text-[11px] text-teal-300 hover:bg-teal-500/10"
-                      onClick={runVlm}
+                      onClick={() => void runVlm()}
                       disabled={vlmBusy}
                       title="Read the label with the vision model (GLM-4.6V-Flash) — fills fields the OCR pass missed, never overrides OCR"
                     >
@@ -567,6 +663,15 @@ export function ScanView({ onSaved }: { onSaved: (scan: ScanDTO) => void }) {
               </Button>
               <Button variant="outline" onClick={runOcr}><RefreshCw className="mr-2 h-4 w-4" /> Re-run</Button>
             </div>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full text-xs text-muted-foreground"
+              onClick={() => setCropOn(true)}
+            >
+              <Crop className="mr-1.5 h-3.5 w-3.5" /> Crop image & re-scan
+            </Button>
           </div>
         </div>
       )}

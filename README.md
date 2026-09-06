@@ -103,7 +103,15 @@ ZAI_API_KEY=your-zai-key      # Z.ai GLM vision — glm-4.6v-flash is free-tier 
 ZAI_MODEL=glm-4.6v-flash
 # NIM_API_KEY=nvapi-...       # NVIDIA NIM backup (https://build.nvidia.com)
 # NIM_MODEL=meta/llama-4-scout-17b-16e-instruct
+# AI_ACCESS_PASSWORD=...      # gate for the SHARED server key (built-in default when unset)
 ```
+
+**Shared key access password** — visitors without their own key can still use AI
+extraction on the server's keys, but must enter an access password first
+(`POST /api/ai/unlock` → session token, kept in `sessionStorage`: unlocked once
+per active session, re-asked after the site is closed). Set `AI_ACCESS_PASSWORD`
+in the environment to change it — changing it instantly rotates all outstanding
+session tokens. BYOK requests bypass the gate.
 
 **Bring your own keys (BYOK)** — no server keys needed: Settings → *My keys* stores your own
 Z.ai / NIM keys encrypted with AES-256-GCM (PBKDF2 passphrase, 150k iterations) in the browser.
@@ -119,7 +127,8 @@ they are never written to the database or logs.
 | GET | `/api/scans/{id}` | Scan with findings |
 | DELETE | `/api/scans/{id}` | Delete scan (cascades findings) |
 | PATCH | `/api/findings/{id}` | Inspector action: `ACCEPT` / `MODIFY` (re-validates) / `REJECT` |
-| POST | `/api/ai/extract` | VLM fallback: image → verbatim field reads (GLM → NIM failover, retry w/ backoff, BYOK headers) |
+| POST | `/api/ai/extract` | VLM fallback: image → verbatim field reads (GLM → NIM failover, retry w/ backoff, BYOK headers; shared server key needs `x-ai-token`) |
+| POST | `/api/ai/unlock` | Access password → session token for the shared server AI key (HMAC, rotates with the password) |
 | GET | `/api/stats` | Dashboard KPIs + chart aggregates |
 | GET | `/api/health` | Deployment verification: version, build date, AI provider status, scan count |
 
@@ -134,6 +143,8 @@ they are never written to the database or logs.
 ## Roadmap
 
 - Bounding-box field selection on the evidence image (MRP / batch / dates) for challenging pre-printed labels
+- ~~Image cropping before OCR~~ — **shipped v2.2** (`src/components/app/image-crop.tsx`: drag/resize editor, natural-resolution cut, crop-and-re-scan from results)
+- ~~Access-password gate for the shared server AI key (unlock once per session)~~ — **shipped v2.2** (`src/lib/ai/access.ts`, `POST /api/ai/unlock`)
 - ~~VLM (vision-language model) fallback extraction for low-quality photos, with a pluggable provider layer + retry/backoff~~ — **shipped** (`src/lib/ai/`, `POST /api/ai/extract`)
 - ~~Device-local (encrypted) bring-your-own-key UI: provider, model, passphrase vault~~ — **shipped v2.1** (`src/lib/vault/vault.ts`, Settings dialog, per-request BYOK headers)
 - ~~Camera v2: torch, zoom, tap-to-focus, front/back switch, guidance frame~~ — **shipped v2.1** (`src/components/app/camera-view.tsx`)

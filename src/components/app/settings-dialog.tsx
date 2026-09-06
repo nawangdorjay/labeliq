@@ -18,8 +18,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from 'sonner'
-import { Bot, CheckCircle2, Eye, EyeOff, KeyRound, Loader2, Lock, LockOpen, Settings, Trash2 } from 'lucide-react'
+import { Bot, CheckCircle2, Eye, EyeOff, KeyRound, Loader2, Lock, LockOpen, Settings, ShieldCheck, Trash2 } from 'lucide-react'
 import { APP_VERSION, BUILD_DATE, FEATURES } from '@/lib/version'
+import { isAiUnlocked, unlockServerAi } from '@/lib/vault/ai-access'
 import {
   byokHeaders, lockVault, saveVault, unlockVault, vaultStatus, wipeVault,
   type VaultStatus,
@@ -29,7 +30,7 @@ interface HealthResponse {
   ok: boolean
   version: string
   buildDate: string
-  ai: { live: boolean; providers: { id: string; label: string; model: string }[]; byokSupported: boolean }
+  ai: { live: boolean; providers: { id: string; label: string; model: string }[]; byokSupported: boolean; serverKeyGate?: string }
   db: { engine: string; scans: number | null }
 }
 
@@ -49,6 +50,11 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   const [hint, setHint] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
 
+  // shared AI key (access password) — AI status tab
+  const [aiPw, setAiPw] = useState('')
+  const [aiUnlockBusy, setAiUnlockBusy] = useState(false)
+  const [aiUnlocked, setAiUnlocked] = useState(false)
+
   const refreshStatus = useCallback(() => setStatus(vaultStatus()), [])
 
   const loadHealth = useCallback(async () => {
@@ -67,8 +73,26 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
     if (open) {
       refreshStatus()
       loadHealth()
+      setAiUnlocked(isAiUnlocked())
     }
   }, [open, refreshStatus, loadHealth])
+
+  const onAiUnlock = useCallback(async () => {
+    if (!aiPw.trim() || aiUnlockBusy) return
+    setAiUnlockBusy(true)
+    try {
+      const { token, error } = await unlockServerAi(aiPw)
+      if (!token) {
+        toast.error(error ?? 'Wrong password')
+      } else {
+        setAiUnlocked(true)
+        setAiPw('')
+        toast.success('Shared AI key unlocked for this session — AI extract works without your own key')
+      }
+    } finally {
+      setAiUnlockBusy(false)
+    }
+  }, [aiPw, aiUnlockBusy])
 
   const onSave = useCallback(async () => {
     if (pass.length < 6) {
@@ -185,6 +209,47 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                 {FEATURES.aiFallback}
               </p>
             </div>
+
+            {health?.ai.providers.length ? (
+              <div className="rounded-md border border-teal-500/25 bg-teal-500/5 p-3">
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <ShieldCheck className="h-3.5 w-3.5 text-teal-300" /> Shared project key
+                  </span>
+                  {aiUnlocked ? (
+                    <Badge className="gap-1 border-teal-500/40 bg-teal-500/15 text-[10px] text-teal-300 hover:bg-teal-500/15">
+                      <LockOpen className="h-3 w-3" /> unlocked this session
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="gap-1 border-amber-500/40 text-[10px] text-amber-300">
+                      <Lock className="h-3 w-3" /> password needed
+                    </Badge>
+                  )}
+                </div>
+                <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                  No API key of your own? The AI reader can use this project&apos;s shared
+                  key — unlock it once with the access password. It stays unlocked for this
+                  session; after you close the site, the password is asked again.
+                </p>
+                {!aiUnlocked && (
+                  <div className="mt-2 flex gap-2">
+                    <Input
+                      type="password"
+                      value={aiPw}
+                      onChange={(e) => setAiPw(e.target.value)}
+                      placeholder="Access password"
+                      autoComplete="off"
+                      aria-label="Shared key access password"
+                      onKeyDown={(e) => { if (e.key === 'Enter') void onAiUnlock() }}
+                    />
+                    <Button size="sm" onClick={() => void onAiUnlock()} disabled={!aiPw.trim() || aiUnlockBusy}>
+                      {aiUnlockBusy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Lock className="mr-1 h-3.5 w-3.5" />}
+                      Unlock
+                    </Button>
+                  </div>
+                )}
+              </div>
+            ) : null}
           </TabsContent>
 
           <TabsContent value="keys" className="space-y-3 pt-1">

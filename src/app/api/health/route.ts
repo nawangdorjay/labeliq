@@ -35,6 +35,8 @@ export async function GET() {
         live: providers.length > 0,
         providers: providers.map((p) => ({ id: p.id, label: p.label, model: p.model })),
         byokSupported: true,
+        /** server-key usage requires the access password (POST /api/ai/unlock) */
+        serverKeyGate: 'password',
       },
       db: {
         engine: 'SQLite',

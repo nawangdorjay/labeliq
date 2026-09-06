@@ -8,10 +8,15 @@
 // Optional BYOK headers (x-zai-key / x-zai-model / x-nim-key / x-nim-model)
 //   let an unlocked device vault serve the call with the user's own keys —
 //   sanitized below, used for this single request, never persisted.
+// Without BYOK keys the call runs on the SERVER's env keys and must present
+// the shared-key session token (x-ai-token, issued by POST /api/ai/unlock
+// after the access-password check). Missing/wrong token → 401 with
+// code AI_PASSWORD_REQUIRED so the client can prompt for the password.
 // Values are VERBATIM label reads — normalization + compliance decisions stay
 // in the deterministic layer (see rules/extract.ts mergeVlmFields).
 
 import { NextRequest, NextResponse } from 'next/server'
+import { verifyAiToken } from '@/lib/ai/access'
 import { VlmUnavailableError, vlmExtractLabel } from '@/lib/ai/extract'
 import type { ProviderOverrides } from '@/lib/ai/providers'
 
@@ -54,6 +59,21 @@ export async function POST(req: NextRequest) {
     const ocrText = typeof body.ocrText === 'string' ? body.ocrText : null
 
     const overrides = readByok(req)
+
+    // No personal key on the call → the server's shared key would be spent.
+    // Require the session token (password gate) before allowing that.
+    if (!overrides.zaiKey && !overrides.nimKey) {
+      if (!verifyAiToken(req.headers.get('x-ai-token'))) {
+        return NextResponse.json(
+          {
+            error: 'AI access password required — unlock once per session, or save your own key in Settings → My keys',
+            code: 'AI_PASSWORD_REQUIRED',
+          },
+          { status: 401 },
+        )
+      }
+    }
+
     const result = await vlmExtractLabel(imageData, ocrText, undefined, overrides)
     return NextResponse.json(result)
   } catch (e) {
